@@ -3,7 +3,7 @@
 
 Adafruit_MCP4725 dac;
 
-#define DAC_RESOLUTION  (12)
+#define DAC_RESOLUTION  4095
 #define CH1 A2
 #define CH2 A3
 #define LED_APPS_OK 3
@@ -43,13 +43,7 @@ void loop()
   if (flag)
   {
     float out = c1 * (float)ch1 + c2 * (float)ch2;
-    uint16_t dac_value = constrain(out, 0, 4095);
-    Serial.println("ch1, ch2:");
-    Serial.println(String(ch1) + ", " + String(ch2));
-    Serial.println("vout:");
-    Serial.println(out);
-    Serial.println("dac_value:");
-    Serial.println(dac_value);
+    uint16_t dac_value = constrain(out, 0, DAC_RESOLUTION);
 
     digitalWrite(RELAY_APPS, HIGH);
     digitalWrite(LED_APPS_OK, HIGH);
