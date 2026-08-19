@@ -1,19 +1,19 @@
 /*
  * ============================================================
  * GPS ATGM336H - STM32 Blue Pill (STM32F103C8T6)
- * main.c - HAL puro (sem framework Arduino)
+ * main.c - projeto STM32CubeIDE
  * ============================================================
  *
- * Pensado para um projeto gerado pelo STM32CubeIDE/CubeMX
- * (com startup_stm32f103xb.s, system_stm32f1xx.c e as libs HAL
- * já incluídas no projeto). Cole este conteúdo no main.c.
+ * IMPORTANTE: este arquivo substitui o main.c inteiro do
+ * projeto gerado pelo CubeMX. Ele NÃO define:
+ *   - HAL_UART_MspInit           -> continua em stm32f1xx_hal_msp.c
+ *   - USART1_IRQHandler/USART2_IRQHandler -> continuam em stm32f1xx_it.c
+ * Não mexa nesses dois arquivos, eles já foram gerados
+ * corretamente pelo CubeMX a partir da configuração das UARTs.
  *
  * Periféricos:
- *   USART2 (PA2 = TX, PA3 = RX) -> módulo GPS ATGM336H, 9600 bps
- *   USART1 (PA9 = TX, PA10 = RX) -> debug via conversor USB-TTL, 115200 bps
- *
- * Recepção do GPS por interrupção, byte a byte, sem usar String
- * (nem heap dinâmica): tudo em buffers char[] de tamanho fixo.
+ *   USART2 (PA2 = TX, PA3 = RX) -> módulo GPS ATGM336H, 9600 bps, IRQ habilitada
+ *   USART1 (PA9 = TX, PA10 = RX) -> USB-TTL / debug, 115200 bps
  * ============================================================
  */
 
@@ -38,7 +38,7 @@
 // HANDLES DOS PERIFÉRICOS
 // ============================================================
 
-UART_HandleTypeDef huart1;   // Debug
+UART_HandleTypeDef huart1;   // USB-TTL / debug
 UART_HandleTypeDef huart2;   // GPS
 
 
@@ -88,13 +88,18 @@ static volatile uint8_t sentenceReady = 0;
 
 
 // ============================================================
-// PROTÓTIPOS
+// PROTÓTIPOS (gerados pelo CubeMX)
 // ============================================================
 
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_USART2_UART_Init(void);
+
+
+// ============================================================
+// PROTÓTIPOS (nossos)
+// ============================================================
 
 static void processNMEA(char *sentence);
 static void processGGA(char *sentence);
@@ -139,6 +144,9 @@ int main(void)
 // ============================================================
 // CALLBACK DE RECEPÇÃO (USART2 - GPS)
 // ============================================================
+// Isso NÃO conflita com stm32f1xx_it.c: o IRQHandler que está
+// lá dentro chama HAL_UART_IRQHandler(&huart2), que por sua
+// vez chama esta callback quando o byte termina de chegar.
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 {
@@ -181,21 +189,10 @@ void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 static void processNMEA(char *sentence)
 {
-    // ========================================================
-    // GNGGA
-    // Latitude / Longitude / Altitude / Satélites
-    // ========================================================
-
     if (strncmp(sentence, "$GNGGA", 6) == 0)
     {
         processGGA(sentence);
     }
-
-    // ========================================================
-    // GNVTG
-    // Velocidade
-    // ========================================================
-
     else if (strncmp(sentence, "$GNVTG", 6) == 0)
     {
         processVTG(sentence);
@@ -204,12 +201,11 @@ static void processNMEA(char *sentence)
 
 
 // ============================================================
-// SEPARA OS CAMPOS DA SENTENÇA (SUBSTITUI toCharArray/split)
+// SEPARA OS CAMPOS DA SENTENÇA
 // ============================================================
 // Modifica a string original, trocando cada ',' por '\0' e
 // guardando o ponteiro de início de cada campo em fields[].
-// Preserva campos vazios (",," -> "" no meio), assim como o
-// parsing original em Arduino.
+// Preserva campos vazios (",," -> "" no meio).
 
 static int splitFields(char *sentence, char *fields[], int maxFields)
 {
@@ -229,7 +225,6 @@ static int splitFields(char *sentence, char *fields[], int maxFields)
             }
         }
 
-        // Remove '\r'/'\n' residual no fim da sentença
         if (*p == '\r' || *p == '\n')
         {
             *p = '\0';
@@ -318,13 +313,6 @@ static void processGGA(char *sentence)
             longitude
         );
 
-        /*
-         * Ignora saltos absurdos do GPS.
-         *
-         * Se o GPS perder o sinal momentaneamente,
-         * pode aparecer uma posição muito distante.
-         */
-
         if (deltaDistance < 100.0)
         {
             distance += deltaDistance;
@@ -348,21 +336,6 @@ static void processVTG(char *sentence)
 
     int fieldCount = splitFields(sentence, fields, VTG_MAX_FIELDS);
 
-    /*
-     * Estrutura:
-
-       $GNVTG,
-       1 curso verdadeiro
-       2 T
-       3 curso magnético
-       4 M
-       5 velocidade em nós
-       6 N
-       7 velocidade km/h
-       8 K
-       ...
-    */
-
     if (fieldCount <= 7 || fields[7][0] == '\0')
     {
         return;
@@ -381,7 +354,7 @@ static void processVTG(char *sentence)
     // ACELERAÇÃO
     // ========================================================
 
-    uint32_t currentTime = HAL_GetTick();  // ms, substitui millis()
+    uint32_t currentTime = HAL_GetTick();
 
     if (!firstVelocity)
     {
@@ -390,13 +363,6 @@ static void processVTG(char *sentence)
         if (dt > 0.0f)
         {
             float rawAcceleration = (newVelocityMs - previousVelocity) / dt;
-
-            /*
-             * Filtro passa-baixas simples.
-             *
-             * Reduz a variação causada pelo
-             * ruído do GNSS.
-             */
 
             const float alpha = 0.2f;
 
@@ -423,7 +389,7 @@ static void processVTG(char *sentence)
 
 
 // ============================================================
-// MOSTRA DADOS (via USART1)
+// MOSTRA DADOS (via USART1 / USB-TTL)
 // ============================================================
 
 static void printData(void)
@@ -461,7 +427,7 @@ static void printData(void)
 
 
 // ============================================================
-// ENVIA STRING PELA USART1 (DEBUG)
+// ENVIA STRING PELA USART1
 // ============================================================
 
 static void debugPrint(const char *msg)
@@ -560,7 +526,7 @@ static void MX_GPIO_Init(void)
 
 
 // ============================================================
-// USART1 - DEBUG (PA9 = TX, PA10 = RX), 115200 bps
+// USART1 - USB-TTL / DEBUG (PA9 = TX, PA10 = RX), 115200 bps
 // ============================================================
 
 static void MX_USART1_UART_Init(void)
@@ -600,72 +566,6 @@ static void MX_USART2_UART_Init(void)
     {
         Error_Handler();
     }
-}
-
-
-// ============================================================
-// MSP INIT - PINOS E CLOCKS DAS UARTS
-// (normalmente gerado em stm32f1xx_hal_msp.c pelo CubeMX)
-// ============================================================
-
-void HAL_UART_MspInit(UART_HandleTypeDef *huart)
-{
-    GPIO_InitTypeDef GPIO_InitStruct = {0};
-
-    if (huart->Instance == USART1)
-    {
-        __HAL_RCC_USART1_CLK_ENABLE();
-
-        // PA9 = TX (alt. function push-pull)
-        GPIO_InitStruct.Pin = GPIO_PIN_9;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-        // PA10 = RX (input floating)
-        GPIO_InitStruct.Pin = GPIO_PIN_10;
-        GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-        HAL_NVIC_SetPriority(USART1_IRQn, 1, 0);
-        HAL_NVIC_EnableIRQ(USART1_IRQn);
-    }
-    else if (huart->Instance == USART2)
-    {
-        __HAL_RCC_USART2_CLK_ENABLE();
-
-        // PA2 = TX (alt. function push-pull)
-        GPIO_InitStruct.Pin = GPIO_PIN_2;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
-        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-        // PA3 = RX (input floating)
-        GPIO_InitStruct.Pin = GPIO_PIN_3;
-        GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-        HAL_NVIC_SetPriority(USART2_IRQn, 0, 0);
-        HAL_NVIC_EnableIRQ(USART2_IRQn);
-    }
-}
-
-
-// ============================================================
-// HANDLERS DE INTERRUPÇÃO
-// (normalmente gerados em stm32f1xx_it.c pelo CubeMX)
-// ============================================================
-
-void USART1_IRQHandler(void)
-{
-    HAL_UART_IRQHandler(&huart1);
-}
-
-void USART2_IRQHandler(void)
-{
-    HAL_UART_IRQHandler(&huart2);
 }
 
 
